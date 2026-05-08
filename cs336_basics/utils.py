@@ -1,11 +1,8 @@
 import gc
-import json
 import random
-from dataclasses import asdict
 
 import numpy as np
 import torch
-from rich import print
 
 
 def seed_everything(seed: int) -> None:
@@ -28,5 +25,9 @@ def get_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def print_color(content: str, color: str = "green"):
-    print(f"[{color}]{content}[/{color}]")
+def print_color(content: str, color: str = "green") -> None:
+    """Print with an ANSI color hint. Falls back to plain print if no terminal."""
+    colors = {"green": "\033[92m", "red": "\033[91m", "yellow": "\033[93m", "blue": "\033[94m"}
+    reset = "\033[0m"
+    prefix = colors.get(color, "")
+    print(f"{prefix}{content}{reset}")

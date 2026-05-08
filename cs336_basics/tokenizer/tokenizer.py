@@ -123,44 +123,60 @@ def train_bpe(
     pair_to_words: dict[tuple[int, int], set[tuple[int, ...]]] = defaultdict(set)
 
     # 1. Pre-tokenization
-    # 1.1 Find chunk boundaries
+    # For small files the multiprocessing overhead (Manager + spawn) dominates.
+    # Use a simple threshold: read the whole file and pre-tokenize in one pass.
+    # Only fall back to multiprocessing for large files where parallelism pays off.
+    MULTIPROCESSING_THRESHOLD = kwargs.get("mp_threshold", 50 * 1024 * 1024)  # 50 MB
+
     with open(input_path, "rb") as f:
-        chunk_boundaries = find_chunk_boundaries(
-            f, desired_num_chunks=kwargs.get("desired_num_chunks", NUM_PROCESSES), split_special_token=b"\n"
-        )
+        f.seek(0, 2)
+        file_size = f.tell()
 
-    if verbose:
-        print_color(f"Identified {len(chunk_boundaries) - 1} chunks for pre-tokenization.")
+    word_counter: Counter = Counter()
+    pairs_freqs: Counter = Counter()
 
-    # 1.2 Count word frequencies across chunks using multiprocessing
-    manager = Manager()
-    queue = manager.Queue()
-    processes: list[Process] = []
+    if file_size < MULTIPROCESSING_THRESHOLD:
+        # Single-threaded path: fast for small corpora, no spawn overhead.
+        with open(input_path, "rb") as f:
+            text = f.read().decode("utf-8", errors="ignore")
+        wc, pf = pre_tokenize(text, special_tokens or [])
+        word_counter.update(wc)
+        pairs_freqs.update(pf)
+        if verbose:
+            print_color(f"Pre-tokenized {file_size // 1024} KB in single-threaded mode.")
+    else:
+        # Multi-process path: used for large files (TinyStories, OpenWebText).
+        with open(input_path, "rb") as f:
+            chunk_boundaries = find_chunk_boundaries(
+                f,
+                desired_num_chunks=kwargs.get("desired_num_chunks", NUM_PROCESSES),
+                split_special_token=b"\n",
+            )
+        if verbose:
+            print_color(f"Identified {len(chunk_boundaries) - 1} chunks for pre-tokenization.")
 
-    for start, end in zip(chunk_boundaries[:-1], chunk_boundaries[1:]):
-        p = Process(
-            target=pre_tokenize_string_worker,
-            args=(input_path, special_tokens, queue, start, end, False),
-        )
-        processes.append(p)
-        p.start()
-    for p in processes:
-        p.join()
+        manager = Manager()
+        queue = manager.Queue()
+        processes: list[Process] = []
+        for start, end in zip(chunk_boundaries[:-1], chunk_boundaries[1:]):
+            p = Process(
+                target=pre_tokenize_string_worker,
+                args=(input_path, special_tokens, queue, start, end, False),
+            )
+            processes.append(p)
+            p.start()
+        for p in processes:
+            p.join()
 
-    if verbose:
-        print_color("Pre-tokenization processes completed. Aggregating results...")
-
-    word_counter = Counter()
-    pairs_freqs = Counter()
-    for _ in range(len(processes)):
-        try:
-            partial_counter, partial_pairs = queue.get(timeout=10)
-            word_counter.update(partial_counter)
-            pairs_freqs.update(partial_pairs)
-        except Empty:
-            continue
-    if verbose:
-        print_color(f"Completed pre-tokenization. Vocabulary size: {len(word_counter)} unique tokens.")
+        for _ in range(len(processes)):
+            try:
+                partial_counter, partial_pairs = queue.get(timeout=10)
+                word_counter.update(partial_counter)
+                pairs_freqs.update(partial_pairs)
+            except Empty:
+                continue
+        if verbose:
+            print_color(f"Completed pre-tokenization. Vocabulary size: {len(word_counter)} unique tokens.")
 
     for word in word_counter:
         for i in range(len(word) - 1):

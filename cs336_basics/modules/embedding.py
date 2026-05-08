@@ -3,6 +3,11 @@ import torch.nn as nn
 
 
 class Embedding(nn.Module):
+    """Token embedding table.
+
+    Supports arbitrary leading dimensions on the input tensor, not just (batch, seq).
+    """
+
     def __init__(
         self,
         num_embeddings: int,
@@ -16,18 +21,14 @@ class Embedding(nn.Module):
         self.embedding_dim = embedding_dim
 
         self.weight = nn.Parameter(torch.empty((num_embeddings, embedding_dim), device=device, dtype=dtype))
-
         self._init_weight()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # return self.weight[x]
+        # x: (...) integer indices  →  (..., embedding_dim)
+        original_shape = x.shape
+        flat = x.reshape(-1)                                 # (total_tokens,)
+        out = self.weight.index_select(0, flat)              # (total_tokens, embedding_dim)
+        return out.reshape(*original_shape, self.embedding_dim)
 
-        B, L = x.shape  # x: (N, L)
-        out = x.reshape(-1)  # (N*L,)
-        out = self.weight.index_select(0, out)  # (N*L, D)
-        out = out.reshape(B, L, self.embedding_dim)  # (N, L, D)
-
-        return out
-
-    def _init_weight(self):
-        torch.nn.init.trunc_normal_(self.weight, mean=0.0, std=1, a=-3, b=3)
+    def _init_weight(self) -> None:
+        torch.nn.init.trunc_normal_(self.weight, mean=0.0, std=1.0, a=-3.0, b=3.0)
